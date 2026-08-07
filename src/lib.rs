@@ -24,6 +24,14 @@ fn extract_type_ident(ty: &Type) -> Option<String> {
         Type::Slice(s) => extract_type_ident(&s.elem),
         Type::Array(a) => extract_type_ident(&a.elem),
         Type::Ptr(p) => extract_type_ident(&p.elem),
+        Type::TraitObject(to) => to.bounds.iter().find_map(|b| match b {
+            syn::TypeParamBound::Trait(t) => t.path.segments.last().map(|s| s.ident.to_string()),
+            _ => None,
+        }),
+        Type::ImplTrait(it) => it.bounds.iter().find_map(|b| match b {
+            syn::TypeParamBound::Trait(t) => t.path.segments.last().map(|s| s.ident.to_string()),
+            _ => None,
+        }),
         _ => None,
     }
 }
@@ -41,7 +49,11 @@ pub fn item_name(item: &Item) -> Option<String> {
         Item::Trait(t) => Some(t.ident.to_string()),
         Item::TraitAlias(t) => Some(t.ident.to_string()),
         Item::Union(u) => Some(u.ident.to_string()),
-        Item::Macro(m) => m.ident.as_ref().map(|id| id.to_string()),
+        Item::Macro(m) => m
+            .ident
+            .as_ref()
+            .map(|id| id.to_string())
+            .or_else(|| m.mac.path.segments.last().map(|s| s.ident.to_string())),
         Item::Mod(m) => Some(m.ident.to_string()),
         Item::ExternCrate(ec) => Some(ec.ident.to_string()),
         Item::Impl(i) => extract_type_ident(&i.self_ty),
@@ -154,15 +166,19 @@ pub fn distribute_items(
     target_path: &Path,
     groups: &[(Vec<&str>, &str)],
 ) -> std::io::Result<()> {
-    let parent = target_path.parent().filter(|p| !p.as_os_str().is_empty()).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "target_path `{}` has no parent directory; cannot create sibling modules",
-                target_path.display()
-            ),
-        )
-    })?;
+    let parent = match target_path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ if target_path.file_name().is_some() => Path::new("."),
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "target_path `{}` has no parent directory; cannot create sibling modules",
+                    target_path.display()
+                ),
+            ));
+        }
+    };
     let stem = target_path
         .file_stem()
         .filter(|s| !s.is_empty())
@@ -387,15 +403,55 @@ struct Unused;
     }
 
     #[test]
-    fn distribute_items_rejects_target_without_parent() {
+    fn distribute_items_handles_bare_relative_target_path() {
         let mut ast = syn::parse_file(r#"fn step() {}"#).unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sub = dir.path().join("sub");
+        std::fs::create_dir_all(&sub).expect("create_dir");
+        let orig_dir = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(&sub).expect("set_cwd");
         let groups: &[(Vec<&str>, &str)] = &[(vec!["step"], "steps")];
-        let result = distribute_items(&mut ast, Path::new("main.rs"), groups);
-        assert!(result.is_err(), "target with no parent must error, not panic");
-        let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("parent directory"), "error explains the missing parent");
+        let res = distribute_items(&mut ast, Path::new("main.rs"), groups);
+        let exists_main = Path::new("main.rs").exists();
+        let exists_sub = Path::new("main/steps.rs").exists();
+        let _ = std::env::set_current_dir(orig_dir);
+        res.expect("bare relative path must succeed");
+        assert!(exists_main);
+        assert!(exists_sub);
     }
 
+    #[test]
+    fn distribute_items_rejects_empty_target_path() {
+        let mut ast = syn::parse_file(r#"fn step() {}"#).unwrap();
+        let groups: &[(Vec<&str>, &str)] = &[(vec!["step"], "steps")];
+        let result = distribute_items(&mut ast, Path::new(""), groups);
+        assert!(result.is_err(), "empty target path must error");
+    }
+
+    #[test]
+    fn distribute_items_moves_impl_trait_object_by_target_type() {
+        let mut ast = syn::parse_file(r#"
+impl MyTrait for dyn TargetType {
+    fn action() {}
+}
+"#).unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let main = dir.path().join("main.rs");
+        let groups: &[(Vec<&str>, &str)] = &[(vec!["TargetType"], "targets")];
+        distribute_items(&mut ast, &main, groups).expect("distribute");
+
+        let targets_content = fs::read_to_string(dir.path().join("main/targets.rs")).unwrap();
+        assert!(targets_content.contains("impl MyTrait for dyn TargetType"), "impl trait object should move");
+    }
+
+    #[test]
+    fn item_name_handles_macro_invocations() {
+        let ast = syn::parse_file(r#"
+my_macro!(foo);
+"#).unwrap();
+        let names: Vec<Option<String>> = ast.items.iter().map(item_name).collect();
+        assert_eq!(names, vec![Some("my_macro".to_string())]);
+    }
     #[test]
     fn distribute_items_rejects_target_without_stem() {
         let mut ast = syn::parse_file(r#"fn step() {}"#).unwrap();

@@ -3,6 +3,8 @@ name = "refactor-tool-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
+[workspace]
+
 [package.metadata]
 cargo-fuzz = true
 

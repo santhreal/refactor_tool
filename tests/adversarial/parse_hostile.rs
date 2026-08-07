@@ -97,3 +97,11 @@ fn distribute_items_rejects_keyword_filenames() {
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 }
+#[test]
+fn item_name_handles_macro_call_and_trait_object() {
+    let src = "my_macro!(1, 2, 3);\nimpl Trait for dyn TargetType {}";
+    let file = parse_rust_file(src).expect("valid");
+    let names: Vec<_> = file.items.iter().filter_map(item_name).collect();
+    assert!(names.contains(&"my_macro".to_string()));
+    assert!(names.contains(&"TargetType".to_string()));
+}

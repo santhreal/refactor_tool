@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.net/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.1.5] - 2026-08-07
+
+### Added
+- Extended `extract_type_ident` to extract target type names for `Type::TraitObject` (`dyn Trait`) and `Type::ImplTrait` (`impl Trait`) self-types in `impl` blocks.
+- Support for top-level macro invocation names in `item_name` by falling back to macro path when `ident` is absent.
+- Self-contained `[workspace]` declaration in `fuzz/Cargo.toml`.
+
+### Fixed
+- Parent path resolution in `distribute_items`: bare relative filenames (e.g., `main.rs`, `lib.rs`) in current directory now resolve correctly to `.` parent directory instead of returning missing parent error.
+
 ## [0.1.4] - 2026-08-07
 
 ### Added
