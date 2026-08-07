@@ -22,7 +22,12 @@ pub fn item_name(item: &Item) -> Option<String> {
         Item::Struct(s) => Some(s.ident.to_string()),
         Item::Enum(e) => Some(e.ident.to_string()),
         Item::Const(c) => Some(c.ident.to_string()),
+        Item::Static(s) => Some(s.ident.to_string()),
         Item::Type(t) => Some(t.ident.to_string()),
+        Item::Trait(t) => Some(t.ident.to_string()),
+        Item::TraitAlias(t) => Some(t.ident.to_string()),
+        Item::Union(u) => Some(u.ident.to_string()),
+        Item::Macro(m) => m.ident.as_ref().map(|id| id.to_string()),
         Item::Impl(i) => {
             if let Type::Path(p) = &*i.self_ty {
                 p.path
@@ -64,12 +69,7 @@ fn impl_method_names(item: &Item) -> Option<Vec<String>> {
 /// an on-disk path, so anything that is not an identifier is rejected before
 /// it can reach either.
 fn is_rust_ident(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    (first.is_ascii_alphabetic() || first == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    !name.contains('#') && syn::parse_str::<syn::Ident>(name).is_ok()
 }
 
 /// Validates every group filename before any AST mutation or file write.
@@ -108,6 +108,27 @@ fn reexports_module(items: &[Item], filename: &str) -> bool {
 }
 
 /// Split selected items from `ast` into sibling module files under `target_path`.
+///
+/// Items named in `groups` move to `<target_stem>/<group>.rs`; everything
+/// else stays in the main file, which gains sorted `pub mod` / `pub use`
+/// declarations for the groups that received items.
+///
+/// ```
+/// let dir = tempfile::tempdir().unwrap();
+/// let target = dir.path().join("main.rs");
+/// std::fs::write(&target, "pub fn helper() {}\npub fn keep() {}\n").unwrap();
+///
+/// let mut ast = refactor_tool::parse_rust_file(
+///     "pub fn helper() {}\npub fn keep() {}\n",
+/// ).unwrap();
+/// let groups: Vec<(Vec<&str>, &str)> = vec![(vec!["helper"], "helpers")];
+/// refactor_tool::distribute_items(&mut ast, &target, &groups).unwrap();
+///
+/// let module = std::fs::read_to_string(dir.path().join("main").join("helpers.rs")).unwrap();
+/// assert!(module.contains("helper"));
+/// let main = std::fs::read_to_string(&target).unwrap();
+/// assert!(main.contains("keep"));
+/// ```
 pub fn distribute_items(
     ast: &mut syn::File,
     target_path: &Path,

@@ -67,14 +67,31 @@ parse_case!(quote_in_attr, "#[doc=\"\\\"\"]\\nfn d() {}");
 
 #[test]
 fn item_name_on_parsed_items() {
-    let src = "fn alpha() {}\nstruct Beta;\nenum Gamma { X }";
+    let src = "fn alpha() {}\nstruct Beta;\nenum Gamma { X }\nstatic DELTA: u32 = 1;\ntrait Epsilon {}\nunion Zeta { a: u32 }\nmacro_rules! eta { () => {} }";
     let file = parse_rust_file(src).expect("valid");
     let names: Vec<_> = file.items.iter().filter_map(item_name).collect();
     assert!(names.contains(&"alpha".to_string()));
     assert!(names.contains(&"Beta".to_string()));
+    assert!(names.contains(&"Gamma".to_string()));
+    assert!(names.contains(&"DELTA".to_string()));
+    assert!(names.contains(&"Epsilon".to_string()));
+    assert!(names.contains(&"Zeta".to_string()));
+    assert!(names.contains(&"eta".to_string()));
 }
-
 #[test]
 fn parse_err_is_syn_error() {
     assert!(parse_rust_file("fn (").is_err());
+}
+#[test]
+fn distribute_items_rejects_keyword_filenames() {
+    for kw in ["fn", "struct", "type", "mod", "impl", "enum", "match", "crate", "super", "self", "trait", "where", "use", "pub"] {
+        let mut ast = parse_rust_file("fn step() {}").unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let main = dir.path().join("main.rs");
+        let groups = &[(vec!["step"], kw)];
+        let result = refactor_tool::distribute_items(&mut ast, &main, groups);
+        assert!(result.is_err(), "keyword filename `{kw}` must be rejected");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
 }
