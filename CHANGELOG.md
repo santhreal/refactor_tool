@@ -5,6 +5,20 @@ All notable changes to `refactor_tool` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.net/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
+## [0.1.4] - 2026-08-07
+
+### Added
+- Multi-identifier `impl` item matching: `distribute_items` now extracts self-type names, trait names, and contained associated type/const/macro names alongside method names, preventing empty `impl` blocks or `impl` blocks matched by type/trait name from being silently left in main.
+- Extended `item_name` to extract names for `Mod` and `ExternCrate` items.
+- Support for extracting self-type identifiers from reference, paren, group, slice, array, and pointer types.
+
+### Changed
+- Standardized `Cargo.toml` authors to `["Santh <64453045+santhreal@users.noreply.github.com>"]`.
+- Cleaned up whitespace formatting in `append_to_file` to maintain consistent double-newline separation.
+
+### Fixed
+- Pruned completed rows in `BACKLOG.md`.
 ## [0.1.3] - 2026-08-07
 
 ### Added

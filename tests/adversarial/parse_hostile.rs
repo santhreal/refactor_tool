@@ -67,7 +67,7 @@ parse_case!(quote_in_attr, "#[doc=\"\\\"\"]\\nfn d() {}");
 
 #[test]
 fn item_name_on_parsed_items() {
-    let src = "fn alpha() {}\nstruct Beta;\nenum Gamma { X }\nstatic DELTA: u32 = 1;\ntrait Epsilon {}\nunion Zeta { a: u32 }\nmacro_rules! eta { () => {} }";
+    let src = "fn alpha() {}\nstruct Beta;\nenum Gamma { X }\nstatic DELTA: u32 = 1;\ntrait Epsilon {}\nunion Zeta { a: u32 }\nmacro_rules! eta { () => {} }\nextern crate theta;\nmod iota;";
     let file = parse_rust_file(src).expect("valid");
     let names: Vec<_> = file.items.iter().filter_map(item_name).collect();
     assert!(names.contains(&"alpha".to_string()));
@@ -77,6 +77,8 @@ fn item_name_on_parsed_items() {
     assert!(names.contains(&"Epsilon".to_string()));
     assert!(names.contains(&"Zeta".to_string()));
     assert!(names.contains(&"eta".to_string()));
+    assert!(names.contains(&"theta".to_string()));
+    assert!(names.contains(&"iota".to_string()));
 }
 #[test]
 fn parse_err_is_syn_error() {

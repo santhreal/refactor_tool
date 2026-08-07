@@ -14,6 +14,20 @@ pub fn parse_rust_file(content: &str) -> syn::Result<syn::File> {
     syn::parse_file(content)
 }
 
+/// Helper to extract the core identifier from a `syn::Type`.
+fn extract_type_ident(ty: &Type) -> Option<String> {
+    match ty {
+        Type::Path(p) => p.path.segments.last().map(|s| s.ident.to_string()),
+        Type::Reference(r) => extract_type_ident(&r.elem),
+        Type::Paren(p) => extract_type_ident(&p.elem),
+        Type::Group(g) => extract_type_ident(&g.elem),
+        Type::Slice(s) => extract_type_ident(&s.elem),
+        Type::Array(a) => extract_type_ident(&a.elem),
+        Type::Ptr(p) => extract_type_ident(&p.elem),
+        _ => None,
+    }
+}
+
 /// Best-effort item name for module distribution.
 #[must_use]
 pub fn item_name(item: &Item) -> Option<String> {
@@ -28,35 +42,41 @@ pub fn item_name(item: &Item) -> Option<String> {
         Item::TraitAlias(t) => Some(t.ident.to_string()),
         Item::Union(u) => Some(u.ident.to_string()),
         Item::Macro(m) => m.ident.as_ref().map(|id| id.to_string()),
-        Item::Impl(i) => {
-            if let Type::Path(p) = &*i.self_ty {
-                p.path
-                    .segments
-                    .last()
-                    .map(|s| s.ident.to_string())
-            } else {
-                None
-            }
-        }
+        Item::Mod(m) => Some(m.ident.to_string()),
+        Item::ExternCrate(ec) => Some(ec.ident.to_string()),
+        Item::Impl(i) => extract_type_ident(&i.self_ty),
         _ => None,
     }
 }
 
-
-/// Returns the identifiers of the methods/associated functions inside an
-/// `impl` block, so `distribute_items` can move the whole block to the module
-/// that owns one of its methods.
-fn impl_method_names(item: &Item) -> Option<Vec<String>> {
+/// Returns all associated identifiers for an `impl` block (self type name,
+/// trait name if any, and contained method/const/type idents), so `distribute_items`
+/// can move the whole block when matching any of these names.
+fn impl_item_names(item: &Item) -> Option<Vec<String>> {
     if let Item::Impl(i) = item {
-        Some(
-            i.items
-                .iter()
-                .filter_map(|it| match it {
-                    syn::ImplItem::Fn(f) => Some(f.sig.ident.to_string()),
-                    _ => None,
-                })
-                .collect(),
-        )
+        let mut names = Vec::new();
+        if let Some(self_name) = extract_type_ident(&i.self_ty) {
+            names.push(self_name);
+        }
+        if let Some((_, path, _)) = &i.trait_ {
+            if let Some(s) = path.segments.last() {
+                names.push(s.ident.to_string());
+            }
+        }
+        for impl_item in &i.items {
+            match impl_item {
+                syn::ImplItem::Fn(f) => names.push(f.sig.ident.to_string()),
+                syn::ImplItem::Const(c) => names.push(c.ident.to_string()),
+                syn::ImplItem::Type(t) => names.push(t.ident.to_string()),
+                syn::ImplItem::Macro(m) => {
+                    if let Some(s) = m.mac.path.segments.last() {
+                        names.push(s.ident.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some(names)
     } else {
         None
     }
@@ -168,7 +188,7 @@ pub fn distribute_items(
 
     for item in std::mem::take(&mut ast.items) {
         let tokens = item.to_token_stream().to_string();
-        let names: Vec<String> = impl_method_names(&item)
+        let names: Vec<String> = impl_item_names(&item)
             .unwrap_or_else(|| item_name(&item).into_iter().collect());
         let mut moved = false;
         for n in names {
@@ -229,7 +249,8 @@ pub fn distribute_items(
 }
 
 fn append_to_file(path: &Path, content: &str) -> std::io::Result<()> {
-    if content.is_empty() {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
         return Ok(());
     }
     let existing = match fs::read_to_string(path) {
@@ -237,7 +258,13 @@ fn append_to_file(path: &Path, content: &str) -> std::io::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => "use super::*;\n".to_string(),
         Err(e) => return Err(e),
     };
-    fs::write(path, existing + "\n\n" + content)
+    let prefix = existing.trim_end();
+    let formatted = if prefix.is_empty() {
+        format!("{trimmed}\n")
+    } else {
+        format!("{prefix}\n\n{trimmed}\n")
+    };
+    fs::write(path, formatted)
 }
 
 #[cfg(test)]
@@ -515,3 +542,65 @@ fn step() {}
         );
     }
 }
+
+    #[test]
+    fn distribute_items_moves_impl_block_by_self_type() {
+        let mut ast = syn::parse_file(r#"
+impl Foo {
+    fn custom() {}
+}
+"#).unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let main = dir.path().join("main.rs");
+        let groups: &[(Vec<&str>, &str)] = &[(vec!["Foo"], "foos")];
+        distribute_items(&mut ast, &main, groups).expect("distribute");
+
+        let main_content = fs::read_to_string(&main).unwrap();
+        assert!(!main_content.contains("impl Foo"), "impl block matching self type should move");
+
+        let foos_content = fs::read_to_string(dir.path().join("main/foos.rs")).unwrap();
+        assert!(foos_content.contains("impl Foo"), "impl block should land in foos.rs");
+    }
+
+    #[test]
+    fn distribute_items_moves_impl_block_with_associated_items() {
+        let mut ast = syn::parse_file(r#"
+impl Bar {
+    type Target = u8;
+    const MAX: usize = 10;
+}
+"#).unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let main = dir.path().join("main.rs");
+        let groups: &[(Vec<&str>, &str)] = &[(vec!["Target"], "types")];
+        distribute_items(&mut ast, &main, groups).expect("distribute");
+
+        let types_content = fs::read_to_string(dir.path().join("main/types.rs")).unwrap();
+        assert!(types_content.contains("impl Bar"), "impl block with matching assoc type should move");
+    }
+
+    #[test]
+    fn distribute_items_moves_impl_trait_by_trait_name() {
+        let mut ast = syn::parse_file(r#"
+impl MyTrait for Baz {
+    type Item = i32;
+}
+"#).unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let main = dir.path().join("main.rs");
+        let groups: &[(Vec<&str>, &str)] = &[(vec!["MyTrait"], "traits")];
+        distribute_items(&mut ast, &main, groups).expect("distribute");
+
+        let traits_content = fs::read_to_string(dir.path().join("main/traits.rs")).unwrap();
+        assert!(traits_content.contains("impl MyTrait for Baz"), "impl block matching trait should move");
+    }
+
+    #[test]
+    fn item_name_handles_extern_crate_and_mod() {
+        let ast = syn::parse_file(r#"
+extern crate std;
+mod inner;
+"#).unwrap();
+        let names: Vec<Option<String>> = ast.items.iter().map(item_name).collect();
+        assert_eq!(names, vec![Some("std".to_string()), Some("inner".to_string())]);
+    }
