@@ -32,6 +32,8 @@ fn extract_type_ident(ty: &Type) -> Option<String> {
             syn::TypeParamBound::Trait(t) => t.path.segments.last().map(|s| s.ident.to_string()),
             _ => None,
         }),
+        Type::Tuple(t) => t.elems.iter().find_map(extract_type_ident),
+        Type::Macro(m) => m.mac.path.segments.last().map(|s| s.ident.to_string()),
         _ => None,
     }
 }
@@ -69,6 +71,15 @@ fn impl_item_names(item: &Item) -> Option<Vec<String>> {
         let mut names = Vec::new();
         if let Some(self_name) = extract_type_ident(&i.self_ty) {
             names.push(self_name);
+        }
+        if let Type::Tuple(t) = &*i.self_ty {
+            for elem in &t.elems {
+                if let Some(name) = extract_type_ident(elem) {
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
+            }
         }
         if let Some((_, path, _)) = &i.trait_ {
             if let Some(s) = path.segments.last() {
@@ -131,11 +142,25 @@ fn declares_module(items: &[Item], filename: &str) -> bool {
         .any(|item| matches!(item, Item::Mod(m) if m.ident == filename))
 }
 
+fn tree_reexports_glob(tree: &UseTree, filename: &str) -> bool {
+    match tree {
+        UseTree::Path(p) => {
+            if p.ident == filename {
+                matches!(&*p.tree, UseTree::Glob(_))
+            } else {
+                tree_reexports_glob(&p.tree, filename)
+            }
+        }
+        UseTree::Group(g) => g.items.iter().any(|item| tree_reexports_glob(item, filename)),
+        _ => false,
+    }
+}
+
 /// True when the AST already re-exports `use <filename::*;` as a glob.
 fn reexports_module(items: &[Item], filename: &str) -> bool {
-    items.iter().any(|item| {
-        matches!(item, Item::Use(u) if matches!(&u.tree,
-            UseTree::Path(p) if p.ident == filename && matches!(&*p.tree, UseTree::Glob(_))))
+    items.iter().any(|item| match item {
+        Item::Use(u) => tree_reexports_glob(&u.tree, filename),
+        _ => false,
     })
 }
 
@@ -270,7 +295,8 @@ fn append_to_file(path: &Path, content: &str) -> std::io::Result<()> {
         return Ok(());
     }
     let existing = match fs::read_to_string(path) {
-        Ok(text) => text,
+        Ok(text) if !text.trim().is_empty() => text,
+        Ok(_) => "use super::*;\n".to_string(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => "use super::*;\n".to_string(),
         Err(e) => return Err(e),
     };
@@ -596,6 +622,60 @@ fn step() {}
             original_main,
             "main file must not be rewritten when module writes cannot happen"
         );
+    }
+    #[test]
+    fn append_to_file_populates_empty_existing_file_with_header() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("empty_mod.rs");
+        fs::write(&path, "  \n  ").expect("seed empty");
+        append_to_file(&path, "pub fn helper() {}").expect("append");
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(
+            content.starts_with("use super::*;\n"),
+            "empty existing file must receive the super header, got: {content}"
+        );
+        assert!(content.contains("pub fn helper() {}"));
+    }
+
+    #[test]
+    fn extract_type_ident_handles_tuple_and_macro() {
+        let ast = syn::parse_file(r#"
+impl (TypeA, TypeB) { fn f() {} }
+impl MyMacro!(Foo) { fn g() {} }
+"#).unwrap();
+        let names: Vec<Option<String>> = ast.items.iter().map(item_name).collect();
+        assert_eq!(
+            names,
+            vec![Some("TypeA".to_string()), Some("MyMacro".to_string())]
+        );
+    }
+
+    #[test]
+    fn impl_item_names_handles_tuple_self_type() {
+        let ast = syn::parse_file(r#"
+impl (Alpha, Beta) {
+    fn action() {}
+}
+"#).unwrap();
+        let item = &ast.items[0];
+        let names = impl_item_names(item).expect("impl item names");
+        assert!(names.contains(&"Alpha".to_string()));
+        assert!(names.contains(&"Beta".to_string()));
+        assert!(names.contains(&"action".to_string()));
+    }
+
+    #[test]
+    fn reexports_module_recognizes_nested_and_group_trees() {
+        let ast_self = syn::parse_file("pub use self::sub_mod::*;").unwrap();
+        assert!(reexports_module(&ast_self.items, "sub_mod"));
+
+        let ast_crate = syn::parse_file("pub use crate::other_mod::*;").unwrap();
+        assert!(reexports_module(&ast_crate.items, "other_mod"));
+
+        let ast_group = syn::parse_file("pub use self::{grp_mod::*, plain::*};").unwrap();
+        assert!(reexports_module(&ast_group.items, "grp_mod"));
+        assert!(reexports_module(&ast_group.items, "plain"));
     }
 }
 

@@ -105,3 +105,11 @@ fn item_name_handles_macro_call_and_trait_object() {
     assert!(names.contains(&"my_macro".to_string()));
     assert!(names.contains(&"TargetType".to_string()));
 }
+#[test]
+fn item_name_handles_tuple_and_macro_impl_blocks() {
+    let src = "impl (HostileA, HostileB) { fn action() {} }\nimpl HostileMacro!(Param) { fn run() {} }";
+    let file = parse_rust_file(src).expect("valid");
+    let names: Vec<_> = file.items.iter().filter_map(item_name).collect();
+    assert!(names.contains(&"HostileA".to_string()));
+    assert!(names.contains(&"HostileMacro".to_string()));
+}

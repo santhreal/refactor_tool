@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.net/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.1.6] - 2026-08-07
+### Fixed
+- Module file initialization in `append_to_file`: empty or whitespace-only module files on disk are now correctly populated with `use super::*;` headers so generated code can resolve parent module symbols.
+- Extended `extract_type_ident` and `impl_item_names` to support `Type::Tuple` and `Type::Macro` self-types in `impl` blocks.
+- Recursive nested glob re-export detection in `reexports_module`: recognizes `self::`, `crate::`, and grouped glob imports to prevent duplicate `pub use` injections.
+
 ## [0.1.5] - 2026-08-07
 
 ### Added
